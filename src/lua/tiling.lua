@@ -183,6 +183,7 @@ local POWERLINE_SYMBOLS = {
 ---@field leader? string Leader key sequence (default: "<D-k>")
 ---@field keybinds? PriseKeybinds Keybind definitions
 ---@field macos_option_as_alt? "false"|"left"|"right"|"true" macOS Option key behavior (default: "false")
+---@field inherit_cwd? boolean Inherit parent's cwd in new panes (default: true)
 
 ---@class PriseConfig
 ---@field theme PriseTheme
@@ -191,6 +192,7 @@ local POWERLINE_SYMBOLS = {
 ---@field tab_bar PriseTabBarConfig
 ---@field leader string
 ---@field keybinds PriseKeybinds
+---@field inherit_cwd boolean Inherit parent's cwd in new panes
 
 -- Default configuration
 ---@type PriseConfig
@@ -229,6 +231,7 @@ local config = {
         show_single_tab = false,
     },
     leader = "<D-k>",
+    inherit_cwd = true, -- New panes inherit parent's cwd
     keybinds = {
         ["<D-p>"] = "command_palette",
         ["<leader>v"] = "split_horizontal",
@@ -269,6 +272,16 @@ local merge_config = utils.merge_config
 
 -- Convenience alias for theme access
 local THEME = config.theme
+
+---Get the working directory to inherit for new panes
+---@return string?
+local function get_inheritable_cwd()
+    if config.inherit_cwd then
+        local pty = get_focused_pty()
+        return pty and pty:cwd()
+    end
+    return nil
+end
 
 ---@type State
 local state = {
@@ -1303,27 +1316,24 @@ local commands = {
         name = "Split Horizontal",
         shortcut = key_prefix .. " v",
         action = function()
-            local pty = get_focused_pty()
             state.pending_split = { direction = "row" }
-            prise.spawn({ cwd = pty and pty:cwd() })
+            prise.spawn({ cwd = get_inheritable_cwd() })
         end,
     },
     {
         name = "Split Vertical",
         shortcut = key_prefix .. " s",
         action = function()
-            local pty = get_focused_pty()
             state.pending_split = { direction = "col" }
-            prise.spawn({ cwd = pty and pty:cwd() })
+            prise.spawn({ cwd = get_inheritable_cwd() })
         end,
     },
     {
         name = "Split Auto",
         shortcut = key_prefix .. " Enter",
         action = function()
-            local pty = get_focused_pty()
             state.pending_split = { direction = get_auto_split_direction() }
-            prise.spawn({ cwd = pty and pty:cwd() })
+            prise.spawn({ cwd = get_inheritable_cwd() })
         end,
     },
     {
@@ -1386,9 +1396,8 @@ local commands = {
         name = "New Tab",
         shortcut = key_prefix .. " t",
         action = function()
-            local pty = get_focused_pty()
             state.pending_new_tab = true
-            prise.spawn({ cwd = pty and pty:cwd() })
+            prise.spawn({ cwd = get_inheritable_cwd() })
         end,
     },
     {
@@ -1602,19 +1611,16 @@ local commands = {
 -- Maps action names (from Action enum) to handler functions
 action_handlers = {
     split_horizontal = function()
-        local pty = get_focused_pty()
         state.pending_split = { direction = "row" }
-        prise.spawn({ cwd = pty and pty:cwd() })
+        prise.spawn({ cwd = get_inheritable_cwd() })
     end,
     split_vertical = function()
-        local pty = get_focused_pty()
         state.pending_split = { direction = "col" }
-        prise.spawn({ cwd = pty and pty:cwd() })
+        prise.spawn({ cwd = get_inheritable_cwd() })
     end,
     split_auto = function()
-        local pty = get_focused_pty()
         state.pending_split = { direction = get_auto_split_direction() }
-        prise.spawn({ cwd = pty and pty:cwd() })
+        prise.spawn({ cwd = get_inheritable_cwd() })
     end,
     focus_left = function()
         move_focus("left")
@@ -1649,9 +1655,8 @@ action_handlers = {
         prise.request_frame()
     end,
     new_tab = function()
-        local pty = get_focused_pty()
         state.pending_new_tab = true
-        prise.spawn({ cwd = pty and pty:cwd() })
+        prise.spawn({ cwd = get_inheritable_cwd() })
     end,
     close_tab = function()
         close_current_tab()

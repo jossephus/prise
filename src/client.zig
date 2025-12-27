@@ -333,16 +333,38 @@ pub const ClientLogic = struct {
     }
 
     fn handleSpawnResult(state: *ClientState, result: msgpack.Value, cwd: ?[]const u8) ServerAction {
-        const id: i64 = switch (result) {
-            .integer => |i| i,
-            .unsigned => |u| @intCast(u),
-            else => -1,
-        };
-        log.info("processServerMessage: spawn result id={}", .{id});
+        var id: i64 = -1;
+        var result_cwd: ?[]const u8 = cwd;
+
+        // Parse response: can be either old format (unsigned ID) or new format (map with pty_id and cwd)
+        if (result == .map) {
+            for (result.map) |kv| {
+                if (kv.key == .string) {
+                    if (std.mem.eql(u8, kv.key.string, "pty_id")) {
+                        id = switch (kv.value) {
+                            .integer => |i| i,
+                            .unsigned => |u| @intCast(u),
+                            else => -1,
+                        };
+                    } else if (std.mem.eql(u8, kv.key.string, "cwd") and kv.value == .string) {
+                        result_cwd = kv.value.string;
+                    }
+                }
+            }
+        } else {
+            // Fallback for old format (just unsigned ID)
+            id = switch (result) {
+                .integer => |i| i,
+                .unsigned => |u| @intCast(u),
+                else => -1,
+            };
+        }
+
+        log.info("processServerMessage: spawn result id={} cwd={?s}", .{ id, result_cwd });
         if (id >= 0) {
             state.pty_id = id;
             state.attached = true;
-            if (cwd) |c| {
+            if (result_cwd) |c| {
                 const owned_cwd = state.allocator.dupe(u8, c) catch return .{ .attached = id };
                 state.cwd_map.put(id, owned_cwd) catch {
                     state.allocator.free(owned_cwd);
@@ -3091,6 +3113,100 @@ test "ClientLogic - processServerMessage" {
 
         const action = try ClientLogic.processServerMessage(&state, msg);
         try testing.expectEqual(std.meta.Tag(ServerAction).redraw, std.meta.activeTag(action));
+    }
+}
+
+test "ClientLogic - spawn response with cwd (new format)" {
+    const testing = std.testing;
+
+    // Test spawn response with new map format including cwd
+    {
+        var state = ClientState.init(testing.allocator);
+        defer state.deinit();
+        try state.pending_requests.put(1, .{ .spawn = .{ .cwd = "/home/user" } });
+
+        // Simulate new server response format: { pty_id: 42, cwd: "/home/user" }
+        var response_kv = [_]msgpack.Value.KeyValue{
+            .{ .key = .{ .string = "pty_id" }, .value = .{ .unsigned = 42 } },
+            .{ .key = .{ .string = "cwd" }, .value = .{ .string = "/home/user" } },
+        };
+
+        const msg = rpc.Message{
+            .response = .{
+                .msgid = 1,
+                .err = null,
+                .result = .{ .map = &response_kv },
+            },
+        };
+
+        const action = try ClientLogic.processServerMessage(&state, msg);
+        try testing.expectEqual(@as(u32, 42), state.pty_id.?);
+        try testing.expectEqual(std.meta.Tag(ServerAction).attached, std.meta.activeTag(action));
+
+        // Verify cwd was stored in cwd_map
+        const stored_cwd = state.cwd_map.get(42);
+        try testing.expect(stored_cwd != null);
+        try testing.expectEqualStrings("/home/user", stored_cwd.?);
+    }
+}
+
+test "ClientLogic - spawn response with cwd (old format backward compatibility)" {
+    const testing = std.testing;
+
+    // Test backward compatibility with old integer response format
+    {
+        var state = ClientState.init(testing.allocator);
+        defer state.deinit();
+        try state.pending_requests.put(1, .{ .spawn = .{ .cwd = "/tmp" } });
+
+        const msg = rpc.Message{
+            .response = .{
+                .msgid = 1,
+                .err = null,
+                .result = .{ .unsigned = 99 },
+            },
+        };
+
+        const action = try ClientLogic.processServerMessage(&state, msg);
+        try testing.expectEqual(@as(u32, 99), state.pty_id.?);
+        try testing.expectEqual(std.meta.Tag(ServerAction).attached, std.meta.activeTag(action));
+
+        // When using old format, cwd should come from pending_requests
+        const stored_cwd = state.cwd_map.get(99);
+        try testing.expect(stored_cwd != null);
+        try testing.expectEqualStrings("/tmp", stored_cwd.?);
+    }
+}
+
+test "ClientLogic - spawn response without cwd" {
+    const testing = std.testing;
+
+    // Test new format response without cwd field
+    {
+        var state = ClientState.init(testing.allocator);
+        defer state.deinit();
+        try state.pending_requests.put(1, .{ .spawn = .{} });
+
+        var response_kv = [_]msgpack.Value.KeyValue{
+            .{ .key = .{ .string = "pty_id" }, .value = .{ .unsigned = 55 } },
+            .{ .key = .{ .string = "cwd" }, .value = .nil },
+        };
+
+        const msg = rpc.Message{
+            .response = .{
+                .msgid = 1,
+                .err = null,
+                .result = .{ .map = &response_kv },
+            },
+        };
+
+        const action = try ClientLogic.processServerMessage(&state, msg);
+        try testing.expectEqual(@as(u32, 55), state.pty_id.?);
+        try testing.expectEqual(std.meta.Tag(ServerAction).attached, std.meta.activeTag(action));
+
+        // No cwd should be stored
+        const stored_cwd = state.cwd_map.get(55);
+        try testing.expect(stored_cwd == null);
     }
 }
 

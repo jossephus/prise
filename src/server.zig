@@ -2237,9 +2237,13 @@ const Server = struct {
             try self.sendRedraw(self.loop, pty_instance, msg, client);
         }
 
-        log.info("Created PTY {} with PID {}", .{ pty_id, process.pid });
+        log.info("Created PTY {} with PID {} cwd={?s}", .{ pty_id, process.pid, cwd });
 
-        return msgpack.Value{ .unsigned = pty_id };
+        // Return both PTY ID and the actual cwd used (for client-side tracking)
+        const kv = try self.allocator.alloc(msgpack.Value.KeyValue, 2);
+        kv[0] = .{ .key = .{ .string = "pty_id" }, .value = .{ .unsigned = pty_id } };
+        kv[1] = .{ .key = .{ .string = "cwd" }, .value = if (cwd) |c| .{ .string = c } else .nil };
+        return msgpack.Value{ .map = kv };
     }
 
     fn handleClosePty(self: *Server, params: msgpack.Value) !msgpack.Value {
